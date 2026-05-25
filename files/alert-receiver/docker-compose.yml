@@ -1,0 +1,17 @@
+services:
+  alert-receiver:
+    build: .
+    container_name: alert-receiver
+    ports:
+      - "3456:3456"
+    volumes:
+      - ./data:/data
+    environment:
+      - PORT=3456
+    restart: unless-stopped
+    networks:
+      - alert-net
+
+networks:
+  alert-net:
+    driver: bridge
