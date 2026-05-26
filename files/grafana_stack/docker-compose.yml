@@ -1,0 +1,35 @@
+  services:
+    influxdb:
+      image: influxdb:2.7
+      container_name: prtg-influxdb
+      env_file: .env
+      ports:
+        - "8086:8086"
+      volumes:
+        - ./data/influxdb:/var/lib/influxdb2
+      restart: unless-stopped
+
+    grafana:
+      image: grafana/grafana:11.0.0
+      container_name: prtg-grafana
+      ports:
+        - "3001:3000"
+      depends_on:
+        - influxdb
+      volumes:
+        - ./data/grafana:/var/lib/grafana
+      restart: unless-stopped
+
+    prtg-collector:
+      image: python:3.11-slim
+      container_name: prtg-collector
+      working_dir: /app
+      env_file: .env
+      depends_on:
+        - influxdb
+      volumes:
+        - ./collector:/app
+      command: >
+        sh -c "pip install --no-cache-dir requests influxdb-client &&
+              python /app/prtg_to_influx.py"
+      restart: unless-stopped

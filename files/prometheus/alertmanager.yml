@@ -1,7 +1,7 @@
 route:
   receiver: 'alert-receiver'
-  group_by: []
-  group_wait: 1s
+  group_by: ['category', 'instance', 'severity']
+  group_wait: 10s
   group_interval: 5s
   repeat_interval: 15m
 
@@ -12,11 +12,10 @@ receivers:
           send_resolved: true
 
 inhibit_rules:
-  - source_matchers: [severity="critical"]
-    target_matchers: [severity="warning"]
-    # Apply inhibition if the alertname is the same.
-    # CAUTION:
-    #   If all label names listed in `equal` are missing
-    #   from both the source and target alerts,
-    #   the inhibition rule will apply!
-    equal: [alertname, dev, instance]
+  - source_matchers:
+      - severity="critical"
+    target_matchers:
+      - severity="warning"
+    equal:
+      - instance
+      - category

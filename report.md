@@ -241,7 +241,7 @@ Cách sử dụng: tải xuống và tạo file config cho alertmanager [alertma
 - route: xác định routing rule mặc định, quyết định alert sẽ đi tới đâu, group như thế nào, bao lâu từ gửi lại noti.
   - receiver: alert sẽ default là đi tới đây.
 
-  - group_by: thông thường sẽ group alert cùng tên lại với nhau nhưn ở đây để trống do ko cần group theo label nào cả.
+  - group_by: group alert cùng tên lại với nhau
 
   - group_wait: khi alert đầu tiên xuất hiện, alertmanager sẽ chờ trước khi gửi noti.
 
@@ -324,6 +324,8 @@ Mô hình hoạt động của stack: windows_exporter -> prometheus -> alertman
 
 <h1 align="center">Alert receiver</h1>
 
+Cơ bản vấn đề: các phần mềm monitoring (PRTG, Prometheus...) trong quá trình monitor sẽ kiểm tra xem các metric có vượt ngưỡng được đặt ra trong alert rule hay không. Nếu có thì phần mềm sẽ gửi alert và thành phần quản lý alert của nó sẽ gửi notification tới nhiều đích đến khác nhau (email, tin nhắn, các kênh chat, webhook...). Cần có cách để tổng hợp các alert từ nhiều nguồn khác nhau vào một nơi để Openclaw có thể phân tích và để người dùng có thể dễ quan sát.
+
 Giải pháp gọn nhẹ để tổng hợp các alert từ nhiều nguồn khác nhau. Hai nguồn hiện tại đang sử dụng là PRTG và Prometheus. PRTG chạy trên một máy Windows và thực hiện monitor 1-2 máy Linux. Prometheus thực hiện monitor chính máy Windows này. Các máy tính này được kết nối với nhau thông qua Tailscale.
 
 Giải pháp: đặt các alert vào cùng một bảng trong database, đánh dấu nguồn rõ ràng (PRTG, Prometheus), đánh dấu hệ thống được monitor, thời gian cụ thể...
@@ -335,11 +337,18 @@ Prometheus:
 ```
 {
     "status":"firing",
-    "labels":{"alertname":"LowDiskSpace","instance":"localhost:9182",
-    "job":"windows",
-    "severity":"warning",
-    "volume":"C:"},
-    "annotations":{"description":"Disk C: free space is below 85% (current: 35.63177100901998%)","summary":"Low disk space on C:"},"startsAt":"2026-05-25T08:52:07.032Z","endsAt":"0001-01-01T00:00:00Z",
+    "labels": {
+      "alertname":"LowDiskSpace","instance":"localhost:9182",
+      "job":"windows",
+      "severity":"warning",
+      "volume":"C:"
+    },
+    "annotations": {
+      "description":"Disk C: free space is below 85% (current: 35.63177100901998%)",
+      "summary":"Low disk space on C:"
+    },
+    "startsAt":"2026-05-25T08:52:07.032Z",
+    "endsAt":"0001-01-01T00:00:00Z",
     "generatorURL":"http://DuyTL-TTS:9090/graph?g0.expr=%28windows_logical_disk_free_bytes%7Bvolume%3D%22C%3A%22%7D+%2F+windows_logical_disk_size_bytes%7Bvolume%3D%22C%3A%22%7D%29+%2A+100+%3C+85&g0.tab=1",
     "fingerprint":"ac2d32df5de54b39"
 }
@@ -385,8 +394,6 @@ Alert receiver sẽ sử dụng SQLite làm database (nhỏ gọn, dễ sử d�
     group_name TEXT,
     probe TEXT,
     down_time TEXT,
-    device_url TEXT,
-    sensor_url TEXT,
     timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
     raw TEXT
   )
@@ -407,5 +414,71 @@ Những cột quan trọng
 - message: đoạn tin nhắn được gửi kèm alert. 
 
 - raw: lưu lại đoạn alert raw từ các ứng dụng monitor với mục đích lưu trữ, backup, lịch sử.
+
+Mỗi nguồn alert sẽ gửi alert tới một webhook khác nhau, tại mỗi webhook này alert-receiver sẽ xử lý dữ liệu và đưa vào database. Alert được lưu vào một database nằm trong directory data. Tại đây, các AI agent như Openclaw có thể thực hiện phân tích các dữ liệu được sắp xếp và phân chia theo thời gian, nguồn, thiết bị, vấn đề...
+
+![](photos/1-9.png)
+
+![](photos/1-10.png)
+
+Bên cạnh đó, có thể in bảng alert ra một web UI để có thể dễ dàng theo dõi các alert nhận vào. Trong alert-receiver này có một trang web cơ bản refresh 30 giây 1 lần để hiển thị các alert mới.
+
+![](photos/1-11.png)
+
+Khả năng mở rộng: có thể coi mỗi webhook là một module, nếu muốn nhận thêm alert từ những phần mềm monitor khác thì chỉ cần thêm một module mới vào file server.js và chạy lại chương trình. Code đã được tối ưu để chỉ cần viết thêm một normalizer để format dữ liệu và thêm webhook để nhận dữ liệu từ các phần mềm monitor.
+
+Khi phân tích dữ liệu bằng Openclaw, có thể set cronjob để nó có thể tự động phân tích và gợi ý phương án khắc phục nhưng cần để trọng tới phạm vi dữ liệu. Nếu cronjob thường xuyên thì nên giới hạn phạm vi ngắn và ngược lại để tránh tốn token của AI agent.
+
+<h1 align="center">Tìm hiểu về Grafana</h1>
+
+Grafana là một phần mềm giám sát và visualization hệ thống. Grafana có thể sử dụng query để lấy các metric từ nhiều nguồn dữ liệu khác nhau và xây dựng các mô hình, bảng, biểu đồ phân tích trong real-time. Grafana cũng monitor metric dựa theo alert rule và gửi đi alert và notification tới nhiều đích đến.
+
+Một stack có chứa Grafana được cấu thành từ một số thành phần chính:
+
+- Nguồn dữ liệu: Grafana có thể kết nối tới nhiều nguồn dữ liệu như Elasticsearch (logging), InfluxDB (lưu dữ liệu và time-series), Prometheus (metric monitor).
+
+- Dashboard: là nơi hiển thị dữ liệu chính, gồm nhiều panel có thể tùy chỉnh bố cục linh hoạt. Người dùng có thể tạo nhiều dashboard khác nhau để phục vụ các use case khác nhau. 
+
+- Panel: là một ô biểu đồ. Có thể điều chỉnh data source và query riêng giữa các biểu đồ. Các loại biểu đồ có thể sử dụng: đường, cột, bảng, đồng hồ, heatmap...
+
+- Query: dùng để lấy dữ liệu từ data source. Mỗi panel có 1 hoặc nhiều query.
+
+- Alert: tại các panel, có thể configure các alert rule. Khi data đạt các rule này, Grafana có thể gửi notification tới nhiều địa chỉ khác nhau.
+
+Sẽ sử dụng Grafana để minh họa data theo dòng thời gian. Nguồn dữ liệu sẽ là dữ liệu từ PRTG đang monitor một máy Linux được lấy về sử dụng một script Python đơn giản [prtg_to_influx.py](/files/grafana_stack/collector/prtg_to_influx.py) và lưu vào InfluxDB. Nên có một file .env chung cho collector và InfluxDB để lưu các biến cần thiết cho cả 2[.env](/files/grafana_stack/.env). Collector sẽ thực hiện lấy dữ liệu từ PRTG thông qua một user account 1 phút 1 lần và ghi vào InfluxDB. Để chạy đồng nhất script, DB và Grafana, nên sử dụng docker compose [docker-compose.yml](/files/grafana_stack/docker-compose.yml).
+
+Note: Nếu cần reset password, chạy command sau:
+
+```
+docker exec -it <container_name> grafana-cli admin reset-admin-password <new_password>
+```
+
+Sau khi đăng nhập, cần kết nối với data source là InfluxDB. Connections -> Data sources -> Chọn InfluxDb. Nhập URL, tên db, user, password trong file .env và chọn Save & Test. Hệ thống sẽ báo xanh nếu kết nối thành công.
+
+Sau đó, để tạo dashboard, vào mục dashboard và new dashboard. Tại đây người dùng có thể import dashboard từ file json hoặc tự tạo visualization. Trong ứng dụng này sẽ chọn phương án 2. Người dùng sẽ tạo một panel đầu tiên. Để tạo panel, có 2 bước cơ bản là set query và chọn loại biểu đồ. Ngôn ngữ chính để query InfluxDB là Flux.
+
+```
+from(bucket: "prtg")
+|> range(start: v.timeRangeStart, stop: v.timeRangeStop)
+|> filter(fn: (r) => r._measurement == "prtg_sensor")
+|> filter(fn: (r) => r.sensor == "SNMP CPU Load")
+|> filter(fn: (r) => r._field == "value_raw")
+```
+
+Ví dụ query là dữ liệu về CPU load.
+
+Người dùng có thể chọn nhiều biểu đồ khác nhau nhưng hữu ích nhất cho ứng dụng này là time chart để theo dõi dữ liệu qua thời gian.
+
+![](photos/1-12.png)
+
+Tại dashboard, có thể điều chỉnh thời gian hiển thị từ 1h trước tới kích cỡ năm. Ở các panel, có thể điều chỉnh nhiều thông số customize như đơn vị, threshold...
+
+Sau khi có dữ liệu từ Grafana và InfluxDB, người dùng có thể yêu cầu Openclaw phân tích các dữ liệu đó, thông báo với người dùng khi nào xảy ra sự cố như sau:
+
+![](photos/1-13.png)
+
+![](photos/1-14.png)
+
+![](photos/1-15.png)
 
 

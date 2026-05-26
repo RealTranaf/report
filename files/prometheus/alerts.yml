@@ -3,30 +3,57 @@ groups:
     rules:
       # CPU Alert - trigger when idle time is low (high usage)
       - alert: HighCPUUsage
-        expr: 100 - (avg by (instance) (irate(windows_cpu_time_total{mode="idle"}[5m])) * 100) > 60
+        expr: 100 - (avg by (instance) (irate(windows_cpu_time_total{mode="idle"}[5m])) * 100) > 70
         for: 1m
         labels:
           severity: warning
         annotations:
           summary: "High CPU usage on {{ $labels.instance }}"
-          description: "CPU usage is above 60% (current: {{ $value }}%)"
+          description: "CPU usage is above 70% (current: {{ $value }}%)"
+      
+      - alert: CriticalCPUUsage
+        expr: 100 - (avg by (instance) (irate(windows_cpu_time_total{mode="idle"}[5m])) * 100) > 10
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Critical CPU usage on {{ $labels.instance }}"
+          description: "CPU usage is above 10% (current: {{ $value }}%)"
 
       # Memory Alert - low available memory
       - alert: LowMemory
-        expr: (windows_memory_available_bytes / windows_memory_physical_total_bytes) * 100 < 20
+        expr: (windows_memory_available_bytes / windows_memory_physical_total_bytes) * 100 < 30
         for: 1m
         labels:
           severity: warning
         annotations:
           summary: "Low memory on {{ $labels.instance }}"
-          description: "Available memory is below 20% (current: {{ $value }}%)"
+          description: "Available memory is below 30% (current: {{ $value }}%)"
+      
+      - alert: CriticalMemory
+        expr: (windows_memory_available_bytes / windows_memory_physical_total_bytes) * 100 < 90
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Critical memory on {{ $labels.instance }}"
+          description: "Available memory is below 90% (current: {{ $value }}%)"
 
       # Disk Alert - low free space
       - alert: LowDiskSpace
-        expr: (windows_logical_disk_free_bytes{volume="C:"} / windows_logical_disk_size_bytes{volume="C:"}) * 100 < 15
+        expr: (windows_logical_disk_free_bytes{volume="C:"} / windows_logical_disk_size_bytes{volume="C:"}) * 100 < 30
         for: 1m
         labels:
           severity: warning
         annotations:
           summary: "Low disk space on {{ $labels.volume }}"
-          description: "Disk {{ $labels.volume }} free space is below 15% (current: {{ $value }}%)"
+          description: "Disk {{ $labels.volume }} free space is below 30% (current: {{ $value }}%)"
+
+      - alert: CriticalDiskSpace
+        expr: (windows_logical_disk_free_bytes{volume="C:"} / windows_logical_disk_size_bytes{volume="C:"}) * 100 < 90
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Critical disk space on {{ $labels.volume }}"
+          description: "Disk {{ $labels.volume }} free space is below 90% (current: {{ $value }}%)"

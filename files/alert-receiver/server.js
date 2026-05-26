@@ -1,14 +1,24 @@
-const express = require('express');
-const bodyParser = require('body-parser');
-const sqlite3 = require('sqlite3').verbose();
-const path = require('path');
+const express = require('express')
+const bodyParser = require('body-parser')
+const sqlite3 = require('sqlite3').verbose()
+const path = require('path')
 
-const app = express();
-app.use(bodyParser.urlencoded({ extended: true }));
-app.use(bodyParser.json({ limit: '10mb' }));
+const app = express()
 
-const dbPath = path.join('/data', 'alerts.db');
-const db = new sqlite3.Database(dbPath);
+const PORT = process.env.PORT || 3456
+
+const DEFAULT_API_LIMIT = 100
+const MAX_API_LIMIT = 2000
+const DEFAULT_HTML_LIMIT = 500
+const MAX_HTML_LIMIT = 5000
+
+app.use(bodyParser.urlencoded({ extended: true }))
+app.use(bodyParser.json({ limit: '10mb' }))
+
+// Database
+
+const dbPath = path.join('/data', 'alerts.db')
+const db = new sqlite3.Database(dbPath)
 
 db.run(`
   CREATE TABLE IF NOT EXISTS alerts (
@@ -26,188 +36,12 @@ db.run(`
     group_name TEXT,
     probe TEXT,
     down_time TEXT,
-    device_url TEXT,
-    sensor_url TEXT,
     timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
     raw TEXT
   )
-`);
+`)
 
-app.get('/health', (req, res) => res.json({ status: 'ok' }));
-
-// PRTG webhook endpoint
-app.post('/webhook/prtg', (req, res) => {
-    const data = req.body;
-
-    const device = data.device || 'Unknown';
-    const status = data.status || 'Unknown';
-
-    let message = data.message || '';
-    try {
-        message = decodeURIComponent(message);
-    } catch (e) {
-        console.log('Warning: Could not decode message, using as-is');
-    }
-
-    let severity = 'info';
-    const statusLower = status.toLowerCase();
-    if (statusLower.includes('down')) severity = 'critical';
-    else if (statusLower.includes('warning')) severity = 'warning';
-    else if (statusLower.includes('error')) severity = 'error';
-    else if (statusLower.includes('threshold')) severity = 'warning';
-    else if (statusLower.includes('breached')) severity = 'warning';
-
-    const sensorName = data.sensor || data.name || 'Unknown';
-    const sensorId = data.sensorid || null;
-    const lastValue = data.lastvalue && data.lastvalue !== '' ? data.lastvalue : null;
-    const downTime = data.down && data.down !== '' ? data.down : null;
-
-    console.log(`[${severity.toUpperCase()}] ${device} - ${sensorName}: ${message}`);
-
-    db.run(
-        `INSERT INTO alerts (
-      source, device, device_id, sensor, sensor_id, status, severity,
-      message, last_value, priority, group_name, probe, down_time,
-      device_url, sensor_url, timestamp, raw
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [
-            'prtg',
-            device,
-            data.deviceid || null,
-            sensorName,
-            sensorId,
-            status,
-            severity,
-            message,
-            lastValue,
-            data.priority || null,
-            data.group || null,
-            data.probe || null,
-            downTime,
-            data.linkdevice || null,
-            data.linksensor || null,
-            data.datetime || new Date().toISOString(),
-            JSON.stringify(data)
-        ],
-        (err) => {
-            if (err) {
-                console.error('DB Error:', err);
-                res.status(500).json({ error: err.message });
-            } else {
-                res.json({ success: true });
-            }
-        }
-    );
-});
-
-// Prometheus Alertmanager webhook endpoint
-app.post('/webhook/prometheus', (req, res) => {
-    const data = req.body;
-    const alerts = data.alerts || [];
-
-    console.log(`[PROMETHEUS] Received ${alerts.length} alert(s)`);
-
-    function formatTimestamp(timestamp) {
-        if (!timestamp) return null;
-
-        const date = new Date(timestamp);
-
-        return date
-            .toLocaleString('en-US', {
-                month: 'numeric',
-                day: 'numeric',
-                year: 'numeric',
-                hour: 'numeric',
-                minute: '2-digit',
-                second: '2-digit',
-                hour12: true
-            })
-            .replace(',', '');
-    }
-
-    alerts.forEach((alert) => {
-        const labels = alert.labels || {};
-        const annotations = alert.annotations || {};
-
-        const alertName = labels.alertname || 'Unknown';
-        const instance = labels.instance || 'localhost';
-        const severity = labels.severity || 'warning';
-        const status = alert.status || 'firing';
-        const summary = annotations.summary || annotations.message || `${alertName} on ${instance}`;
-        const description = annotations.description || '';
-        const startsAt = alert.startsAt || new Date().toISOString();
-        const endsAt = alert.endsAt;
-
-        const message = description ? `${summary} - ${description}` : summary;
-
-        const severityMapped =
-            severity === 'critical' ? 'critical' : severity === 'warning' ? 'warning' : 'info';
-
-        const statusMapped = status === 'firing' ? 'firing' : 'resolved';
-
-        console.log(`[${severityMapped.toUpperCase()}] ${instance} - ${alertName}: ${message}`);
-
-        const formattedTimestamp = formatTimestamp(
-            status === 'resolved'
-                ? endsAt || startsAt
-                : startsAt
-        );
-
-        db.run(
-            `INSERT INTO alerts (
-        source, device, device_id, sensor, sensor_id, status, severity,
-        message, last_value, priority, group_name, probe, down_time,
-        device_url, sensor_url, timestamp, raw
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [
-                'prometheus',
-                instance,
-                null,
-                alertName,
-                labels.job || null,
-                statusMapped,
-                severityMapped,
-                message,
-                labels.value || null,
-                severity,
-                null,
-                null,
-                null,
-                null,
-                null,
-                formattedTimestamp,
-                JSON.stringify(alert)
-            ],
-            (err) => {
-                if (err) console.error('DB Error:', err);
-            }
-        );
-    });
-
-    res.json({ success: true, received: alerts.length });
-});
-
-app.get('/alerts', (req, res) => {
-    const limit = Math.min(parseInt(req.query.limit, 10) || 100, 2000);
-    //  db.all(`SELECT * FROM alerts ORDER BY timestamp DESC LIMIT ?`, [limit], (err, rows) => {
-    db.all(`SELECT * FROM alerts ORDER BY id DESC LIMIT ?`, [limit], (err, rows) => {
-        if (err) res.status(500).json({ error: err.message });
-        else res.json(rows);
-    });
-});
-
-app.get('/alerts/severity/:level', (req, res) => {
-    const level = req.params.level;
-    const limit = Math.min(parseInt(req.query.limit, 10) || 100, 2000);
-    db.all(
-        `SELECT * FROM alerts WHERE severity = ? ORDER BY timestamp DESC LIMIT ?`,
-        [level, limit],
-        (err, rows) => {
-            if (err) res.status(500).json({ error: err.message });
-            else res.json(rows);
-        }
-    );
-});
+// Helper
 
 function escapeHtml(str) {
     return String(str ?? '')
@@ -215,44 +49,278 @@ function escapeHtml(str) {
         .replace(/</g, '&lt;')
         .replace(/>/g, '&gt;')
         .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#39;');
+        .replace(/'/g, '&#39;')
+}
+
+function formatTimestamp(timestamp) {
+    if (!timestamp) return null
+
+    return new Date(timestamp).toLocaleString('en-US', {
+        month: 'numeric',
+        day: 'numeric',
+        year: 'numeric',
+        hour: 'numeric',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: true
+    })
+        .replace(',', '')
 }
 
 function severityClass(severity) {
-    const value = String(severity || '').toLowerCase();
-    if (value === 'critical' || value === 'error') return 'sev-critical';
-    if (value === 'warning') return 'sev-warning';
-    if (value === 'info') return 'sev-info';
-    return 'sev-other';
+    const value = String(severity || '').toLowerCase()
+    if (value === 'critical' || value === 'error') return 'sev-critical'
+    if (value === 'warning') return 'sev-warning'
+    if (value === 'info') return 'sev-info'
+    return 'sev-other'
 }
 
-app.get(['/', '/alerts/ui', '/alerts/view'], (req, res) => {
-    const limit = Math.min(parseInt(req.query.limit, 10) || 500, 5000);
+function mapPrtgSeverity(status) {
+    const value = String(status || '').toLowerCase()
+
+    if (value.includes('down')) return 'critical'
+    if (value.includes('error')) return 'error'
+    if (value.includes('warning')) return 'warning'
+    if (value.includes('threshold')) return 'warning'
+    if (value.includes('breached')) return 'warning'
+
+    return 'info'
+}
+
+function mapPrometheusSeverity(severity) {
+    const value = String(severity || '').toLowerCase()
+
+    if (value === 'critical') return 'critical'
+    if (value === 'warning') return 'warning'
+    if (value === 'error') return 'error'
+
+    return 'info'
+}
+
+// DB helper
+
+function insertAlert(alert, callback = () => { }) {
+    const sql = `
+        INSERT INTO alerts (
+            source, device, device_id, sensor,
+            sensor_id, status, severity, message, last_value,
+            priority, group_name, probe, down_time, timestamp, raw
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `
+
+    const values = [
+        alert.source, alert.device, alert.device_id, alert.sensor,
+        alert.sensor_id, alert.status, alert.severity, alert.message, alert.last_value,
+        alert.priority, alert.group_name, alert.probe, alert.down_time, alert.timestamp, alert.raw
+    ]
+
+    db.run(sql, values, callback)
+}
+
+function getRecentAlerts(limit, callback) {
+    db.all(`SELECT * FROM alerts ORDER BY id DESC LIMIT ?`, [limit], callback)
+}
+
+function getAlertsBySeverity(level, limit, callback) {
+    db.all(`SELECT * FROM alerts WHERE severity = ? ORDER BY id DESC LIMIT ?`, [level, limit], callback)
+}
+
+// Normalizers
+
+function normalizePrtgAlert(data) {
+    const message = data.message || ''
+
+    try {
+        message = decodeURIComponent(message)
+    } catch (e) {
+        console.log('Warning: Could not decode message, using as-is')
+    }
+
+    return {
+        source: 'prtg',
+        device: data.device || 'Unknown',
+        device_id: data.deviceid || null,
+        sensor: data.sensor || data.name || 'Unknown',
+        sensor_id: data.sensorid || null,
+        status: data.status || 'Unknown',
+        severity: mapPrtgSeverity(data.status),
+        message,
+        last_value:
+            data.lastvalue && data.lastvalue !== ''
+                ? data.lastvalue
+                : null,
+        priority: data.priority || null,
+        group_name: data.group || null,
+        probe: data.probe || null,
+        down_time:
+            data.down && data.down !== ''
+                ? data.down
+                : null,
+        timestamp: new Date().toISOString(),
+        raw: JSON.stringify(data)
+    }
+}
+
+function normalizePrometheusAlert(alert) {
+    const labels = alert.labels || {}
+    const annotations = alert.annotations || {}
+
+    const alertName = labels.alertname || 'Unknown'
+    const instance = labels.instance || 'localhost'
+
+    const status = alert.status || 'firing'
+    const statusMapped = status === 'firing' ? 'firing' : 'resolved'
+
+    const summary =
+        annotations.summary ||
+        annotations.message ||
+        `${alertName} on ${instance}`
+
+    const startsAt = alert.startsAt || new Date().toISOString()
+    const endsAt = alert.endsAt
+
+    const formattedTimestamp = formatTimestamp(
+        status === 'resolved'
+            ? endsAt || startsAt
+            : startsAt
+    )
+
+    const description = annotations.description || ''
+
+    return {
+        source: 'prometheus',
+        device: instance,
+        device_id: null,
+        sensor: alertName,
+        sensor_id: labels.job || null,
+        status: statusMapped,
+        severity: mapPrometheusSeverity(labels.severity),
+        message: description
+            ? `${summary} - ${description}`
+            : summary,
+        last_value: labels.value || null,
+        priority: labels.severity || null,
+        group_name: null,
+        probe: null,
+        down_time: null,
+        timestamp: formattedTimestamp,
+        raw: JSON.stringify(alert)
+    }
+}
+
+// Health endpoint
+app.get('/health', (req, res) => res.json({ status: 'ok' }))
+
+// PRTG webhook endpoint
+
+app.post('/webhook/prtg', (req, res) => {
+    const alert = normalizePrtgAlert(req.body)
+    console.log(`[${alert.severity.toUpperCase()}] ${alert.device} - ${alert.sensor}: ${alert.message}`)
+    insertAlert(alert, (err) => {
+        if (err) {
+            console.error('[DB ERROR]', err)
+
+            return res.status(500).json({
+                success: false,
+                error: err.message
+            })
+        }
+        res.json({
+            success: true
+        })
+    })
+})
+
+// Prometheus Alertmanager webhook endpoint
+
+app.post('/webhook/prometheus', (req, res) => {
+    const alerts = req.body.alerts || []
+    console.log(`[PROMETHEUS] Received ${alerts.length} alert(s)`)
+    alerts.forEach((rawAlert) => {
+        const alert = normalizePrometheusAlert(rawAlert)
+        console.log(`[${alert.severity.toUpperCase()}] ${alert.device} - ${alert.sensor}: ${alert.message}`)
+        insertAlert(alert, (err) => {
+            if (err) {
+                console.error('[DB ERROR]', err)
+            }
+        })
+    })
+    res.json({
+        success: true,
+        received: alerts.length
+    })
+})
+
+app.get('/alerts', (req, res) => {
+    const limit = Math.min(
+        parseInt(req.query.limit, 10) || DEFAULT_API_LIMIT,
+        MAX_API_LIMIT
+    )
+    getRecentAlerts(limit, (err, rows) => {
+        if (err) {
+            return res.status(500).json({
+                error: err.message
+            })
+        }
+        res.json(rows)
+    })
+})
+
+app.get('/alerts/severity/:level', (req, res) => {
+    const level = req.params.level
+    const limit = Math.min(
+        parseInt(req.query.limit, 10) || DEFAULT_API_LIMIT,
+        MAX_API_LIMIT
+    )
+    getAlertsBySeverity(level, limit, (err, rows) => {
+        if (err) {
+            return res.status(500).json({
+                error: err.message
+            })
+        }
+        res.json(rows)
+    })
+})
+
+app.get(['/'], (req, res) => {
+    const limit = Math.min(
+        parseInt(req.query.limit, 10) || DEFAULT_HTML_LIMIT,
+        MAX_HTML_LIMIT
+    )
 
     //  db.all(`SELECT * FROM alerts ORDER BY timestamp DESC LIMIT ?`, [limit], (err, rows) => {
-    db.all(`SELECT * FROM alerts ORDER BY id DESC LIMIT ?`, [limit], (err, rows) => {
+    getRecentAlerts(limit, (err, rows) => {
         if (err) {
-            res.status(500).send(`<pre>DB Error: ${escapeHtml(err.message)}</pre>`);
-            return;
+            res.status(500).send(`<pre>DB Error: ${escapeHtml(err.message)}</pre>`)
+            return
         }
 
         const tableRows = rows
-            .map(
-                (row) => `
-          <tr>
-            <td>${escapeHtml(row.timestamp)}</td>
-            <td>${escapeHtml(row.source)}</td>
-            <td>${escapeHtml(row.device)}</td>
-            <td>${escapeHtml(row.sensor)}</td>
-            <td>${escapeHtml(row.status)}</td>
-            <td><span class="pill ${severityClass(row.severity)}">${escapeHtml(row.severity)}</span></td>
-            <td class="msg" title="${escapeHtml(row.message)}">${escapeHtml(row.message)}</td>
-          </tr>`
-            )
-            .join('');
+            .map((row) => {
+                return `
+                    <tr>
+                        <td>${escapeHtml(formatTimestamp(row.timestamp))}</td>
+                        <td>${escapeHtml(row.source)}</td>
+                        <td>${escapeHtml(row.device)}</td>
+                        <td>${escapeHtml(row.sensor)}</td>
+                        <td>${escapeHtml(row.status)}</td>
+                        <td>
+                            <span class="pill ${severityClass(row.severity)}">
+                                ${escapeHtml(row.severity)}
+                            </span>
+                        </td>
+                        <td class="msg" title="${escapeHtml(row.message)}">
+                            ${escapeHtml(row.message)}
+                        </td>
+                    </tr>
+                `
+            })
+            .join('')
 
-        res.setHeader('Content-Type', 'text/html; charset=utf-8');
-        res.send(`<!doctype html>
+        res.setHeader('Content-Type', 'text/html; charset=utf-8')
+        res.send(`
+<!doctype html>
 <html>
 <head>
   <meta charset="utf-8" />
@@ -307,14 +375,14 @@ app.get(['/', '/alerts/ui', '/alerts/view'], (req, res) => {
     </div>
   </div>
   <script>
-    setTimeout(() => location.reload(), 30000);
+    setTimeout(() => location.reload(), 30000)
   </script>
 </body>
-</html>`);
-    });
-});
+</html>
+        `)
+    })
+})
 
-const PORT = process.env.PORT || 3456;
 app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Alert receiver running on port ${PORT}`);
-});
+    console.log(`Alert receiver running on port ${PORT}`)
+})
