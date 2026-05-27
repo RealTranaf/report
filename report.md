@@ -459,15 +459,20 @@ Sau đó, để tạo dashboard, vào mục dashboard và new dashboard. Tại �
 
 ```
 from(bucket: "prtg")
-|> range(start: v.timeRangeStart, stop: v.timeRangeStop)
-|> filter(fn: (r) => r._measurement == "prtg_sensor")
-|> filter(fn: (r) => r.sensor == "SNMP CPU Load")
-|> filter(fn: (r) => r._field == "value_raw")
+  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)
+  |> filter(fn: (r) =>
+    r._measurement == "prtg_sensor" and
+    r.device == "jump-server" and
+    r.sensor == "SNMP CPU Load" and
+    r._field == "value_raw"
+  )
+  |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false)
+  |> yield(name: "cpu")
 ```
 
-Ví dụ query là dữ liệu về CPU load.
+Ví dụ query lấy dữ liệu CPU load.
 
-Người dùng có thể chọn nhiều biểu đồ khác nhau nhưng hữu ích nhất cho ứng dụng này là time chart để theo dõi dữ liệu qua thời gian.
+Người dùng có thể chọn nhiều biểu đồ khác nhau nhưng hữu ích nhất cho ứng dụng này là time chart để theo dõi dữ liệu qua thời gian. Khi tạo biểu đồ, người dùng cần lưu tâm tới đơn vị và giá trị min và max của biểu đồ. VD: biểu đồ thể hiện metric ở dạng % thì nên chuyển đơn vị sang dạng percent và min và max là 0-100.
 
 ![](photos/1-12.png)
 
